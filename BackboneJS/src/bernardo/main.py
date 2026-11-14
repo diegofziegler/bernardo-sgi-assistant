@@ -71,15 +71,17 @@ async def health():
     return {"status": "ok", "agent": "Bernardo", "target_app": "SGI"}
 
 
-@app.get("/widget.js", response_class=PlainTextResponse)
+from fastapi.responses import Response
+
+@app.get("/widget.js")
 async def get_widget_script(request: Request):
     widget_path = STATIC_DIR / "widget.js"
     if not widget_path.exists():
         raise HTTPException(status_code=404, detail="Widget JS no encontrado.")
     script_content = widget_path.read_text(encoding="utf-8")
     base_url = str(request.base_url).rstrip("/")
-    return script_content.replace("__BERNARDO_BASE_URL__", base_url)
-
+    final_js = script_content.replace("__BERNARDO_BASE_URL__", base_url)
+    return Response(content=final_js, media_type="application/javascript")
 
 @app.post("/api/bernardo/alerts", dependencies=[Depends(verify_admin_key)])
 async def publish_alert(payload: GlobalAlertRequest):
