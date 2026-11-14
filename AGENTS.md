@@ -1,0 +1,124 @@
+# AGENTS.md — Especificación Técnica de Bernardo (Asistente SGI)
+
+Este archivo contiene el contexto arquitectónico, contratos de integración, estructura del proyecto y reglas de desarrollo para **Bernardo**, el asistente de soporte técnico de **SGI**. Está diseñado para que cualquier agente de programación (Gemini, Codex, Cursor, Claude, etc.) pueda comprender, reconstruir, depurar o agregar nuevas funcionalidades sin romper la compatibilidad con el ecosistema existente.
+
+---
+
+## 1. Propósito y Contexto del Proyecto
+
+* **Nombre del Agente:** Bernardo
+* **Aplicación Anfitriona:** **SGI** (Sistema de Gestión Integral), cuyo frontend está construido en **BackboneJS**.
+* **Rol:** Asistente virtual de soporte al usuario. Se presenta inicialmente como un botón flotante circular con el ícono SVG de la cara de un robot en la esquina inferior derecha de SGI, acompañado de una burbuja proactiva de bienvenida. Al hacer clic, despliega una ventana de chat asíncrona.
+* **Arquitectura:** *Backend-for-Frontend (BFF)* en **Python (FastAPI)** + **Redis** + **Web Component embebible con Shadow DOM** servido dinámicamente por el propio backend.
+
+---
+
+## 2. Estructura Exacta del Repositorio
+
+El proyecto utiliza `uv` como gestor de dependencias y entornos virtuales. Los fuentes residen bajo `BackboneJs/src/bernardo/`:
+
+```text
+bernardo-sgi-assistant/
+├── pyproject.toml                  # Dependencias y configuración de build (hatchling)
+├── .env                            # Variables de entorno locales (no versionado)
+├── .env.example                    # Plantilla de variables de entorno
+├── README.md                       # Documentación general y guía de despliegue
+├── AGENTS.md                       # Este archivo (especificación para agentes IA)
+└── BackboneJs/
+    └── src/
+        └── bernardo/
+            ├── __init__.py
+            ├── config.py           # Configuración tipada mediante pydantic-settings
+            ├── redis_store.py      # Persistencia asíncrona del historial UI en Redis
+            ├── rag_client.py       # Cliente HTTP asíncrono (httpx) hacia la API RAG
+            ├── main.py             # Servidor FastAPI (CORS, SSE streaming, endpoints y widget)
+            └── static/
+                └── widget.js       # Script autocontenido con Shadow DOM y UI del robot
+```
+
+---
+
+## 3. Comandos de Ejecución y Desarrollo
+
+* **Sincronizar dependencias:**
+  ```bash
+  uv sync
+  ```
+* **Levantar servidor de desarrollo (obligatorio indicar `--app-dir`):**
+  ```bash
+  uv run uvicorn bernardo.main:app --host 0.0.0.0 --port 8001 --reload --app-dir BackboneJs/src
+  ```
+* **Verificación de salud:**
+  `GET http://localhost:8001/health`
+
+---
+
+## 4. Contratos de Integración Externos (NO ROMPER)
+
+Bernardo no ejecuta modelos de embeddings ni busca directamente en la base vectorial; delega la inteligencia RAG a un microservicio externo (`entrega_7`).
+
+### 4.1. Contrato con el Servicio RAG (`entrega_7`)
+* **Endpoint:** `POST {RAG_API_URL}` (por defecto `http://localhost:8000/api/v1/chat`).
+* **Request JSON (`ChatRequest`):**
+  ```json
+  {
+    "message": "string (1..20000 chars)",
+    "thread_id": "string (regex: ^[\\w.:-]+$)",
+    "idioma_destino": "es"
+  }
+  ```
+  *Nota:* El esquema del RAG tiene `extra="forbid"`. Nunca enviar campos adicionales en el payload hacia `entrega_7`.
+* **Response JSON (`ChatResponse`):**
+  ```json
+  {
+    "thread_id": "string",
+    "reply": "string",
+    "idioma_destino": "string",
+    "history": [
+      { "sender": "string", "content": "string" }
+    ]
+  }
+  ```
+
+### 4.2. Contrato con Redis (Estado de Sesión UI)
+* **Cliente:** `redis.asyncio.Redis` (`decode_responses=True`).
+* **Patrón de claves:** `bernardo:ui_history:{thread_id}` (estructura `LIST` de Redis con objetos JSON `{"role": "user"|"assistant", "content": "..."}`).
+* **TTL:** Configurable mediante `SESSION_TTL_SECONDS` (default `86400` segundos / 24 horas).
+
+### 4.3. Contrato de Integración con SGI (BackboneJS)
+* SGI integra a Bernardo mediante una única etiqueta `<script src="http://<host>:8001/widget.js" defer></script>`.
+* **Identidad de Sesión (`thread_id`):**
+  1. Si `window.SGI_USER_ID` está definido en el contexto global de BackboneJS, `widget.js` construye `sgi_user_<SGI_USER_ID>`.
+  2. Si no existe, genera un UUID y lo almacena en `localStorage` bajo la clave `bernardo_sgi_thread_id`.
+* **Placeholder Dinámico:** El endpoint `GET /widget.js` reemplaza `__BERNARDO_BASE_URL__` en tiempo de ejecución por `str(request.base_url).rstrip("/")` para que las llamadas `fetch` apunten siempre al servidor correcto sin hardcodear dominios.
+
+---
+
+## 5. Endpoints Internos de Bernardo
+
+| Método | Ruta | Descripción |
+| :--- | :--- | :--- |
+| `GET` | `/health` | Retorna `{"status": "ok", "agent": "Bernardo", "target_app": "SGI"}`. |
+| `GET` | `/widget.js` | Sirve `static/widget.js` (`text/plain`) inyectando la URL base del servidor. |
+| `GET` | `/api/bernardo/history/{thread_id}` | Devuelve el historial almacenado en Redis para reconstruir el chat al abrir el widget. |
+| `POST` | `/api/bernardo/chat/stream` | Recibe `{message, thread_id, idioma_destino}`, guarda en Redis, consulta el RAG y responde vía **Server-Sent Events (`text/event-stream`)** con eventos JSON: `{"type": "chunk", "content": "..."}`, `{"type": "done"}` o `{"type": "error", "content": "..."}`. |
+
+---
+
+## 6. Reglas y Convenciones para Modificaciones Futuras
+
+1. **Aislamiento CSS Obligatorio (Shadow DOM):** Toda modificación visual en `static/widget.js` debe permanecer encapsulada dentro de `host.attachShadow({ mode: "open" })`. Nunca inyectar estilos globales en `document.head` que puedan alterar los estilos de BackboneJS/Bootstrap de SGI.
+2. **Asincronía Pura:** Todo I/O en FastAPI (`httpx.AsyncClient`, `redis.asyncio`, lectura de archivos o generadores SSE) debe ser estrictamente no bloqueante (`async`/`await`).
+3. **CORS y Preflight (`OPTIONS`):** Mantener `CORSMiddleware` configurado para soportar peticiones pre-flight `OPTIONS` desde los orígenes donde se despliegue SGI.
+4. **Identidad y Tono de Bernardo:** Cualquier mensaje de sistema, saludo proactivo o mensaje de error en la UI debe mantener la persona de **Bernardo** (cordial, técnico, claro y enfocado en ayudar dentro de **SGI**).
+5. **Validación de `thread_id`:** Respetar siempre el patrón `^[\w.:-]+$` exigido por el esquema de validación de `entrega_7`.
+
+---
+
+## 7. Roadmap Sugerido de Nuevas Features
+
+Si se solicita expandir a Bernardo, priorizar estas mejoras manteniendo la arquitectura actual:
+* **Renderizado de Markdown y Fuentes/Referencias:** Parsear listas, negritas, bloques de código y enlaces/referencias documentales devueltas por el RAG dentro de `.msg.assistant` en `widget.js` (sanitizando HTML para evitar XSS).
+* **Contexto de Vista Activa de BackboneJS:** Permitir que `widget.js` lea una variable opcional `window.SGI_CURRENT_MODULE` (ej. `"Facturación"`, `"Inventario"`) para enriquecer la consulta enviada al RAG.
+* **Streaming Real End-to-End:** Si `entrega_7` expone un endpoint de streaming nativo de LangGraph (`astream_events`), adaptar `rag_client.py` para consumirlo por chunks en lugar de esperar la respuesta completa y simular el streaming token a token.
+* **Botón de Limpiar Conversación:** Agregar un endpoint `DELETE /api/bernardo/history/{thread_id}` y un botón en el header del chat para reiniciar el hilo en Redis.
