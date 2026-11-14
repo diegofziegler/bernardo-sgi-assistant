@@ -6,6 +6,13 @@
     const STORAGE_KEY = "bernardo_sgi_thread_id";
     const DISMISSED_ALERT_KEY = "bernardo_dismissed_alert_id";
 
+    // Cargar marked.js desde CDN para soporte completo de Markdown en las respuestas de Bernardo
+    if (!window.marked) {
+        const script = document.createElement("script");
+        script.src = "https://cdn.jsdelivr.net/npm/marked/marked.min.js";
+        document.head.appendChild(script);
+    }
+
     function getThreadId() {
         if (window.SGI_USER_ID) {
             return `sgi_user_${window.SGI_USER_ID}`;
@@ -205,7 +212,6 @@
                 border-radius: 10px;
                 font-size: 13.5px;
                 line-height: 1.45;
-                white-space: pre-wrap;
                 word-wrap: break-word;
             }
             .msg.user {
@@ -213,6 +219,7 @@
                 color: #ffffff;
                 align-self: flex-end;
                 border-bottom-right-radius: 2px;
+                white-space: pre-wrap;
             }
             .msg.assistant {
                 background: #ffffff;
@@ -221,6 +228,17 @@
                 align-self: flex-start;
                 border-bottom-left-radius: 2px;
             }
+            /* Estilos de Markdown para las respuestas del Asistente */
+            .msg.assistant p { margin: 0 0 8px 0; }
+            .msg.assistant p:last-child { margin-bottom: 0; }
+            .msg.assistant ul, .msg.assistant ol { margin: 4px 0 4px 18px; padding: 0; }
+            .msg.assistant code { background: #f1f5f9; padding: 2px 4px; border-radius: 4px; font-family: monospace; font-size: 12px; }
+            .msg.assistant pre { background: #0f172a; color: #f8fafc; padding: 8px; border-radius: 6px; overflow-x: auto; }
+            .msg.assistant pre code { background: transparent; color: #f8fafc; padding: 0; }
+            .msg.assistant table { width: 100%; border-collapse: collapse; margin: 6px 0; font-size: 12.5px; }
+            .msg.assistant th, .msg.assistant td { border: 1px solid #cbd5e1; padding: 4px 8px; text-align: left; }
+            .msg.assistant th { background: #f1f5f9; }
+
             .input-bar {
                 display: flex;
                 padding: 10px;
@@ -284,7 +302,7 @@
                 </div>
             </div>
 
-            <div class="proactive-bubble" id="proactiveBubble">
+            <div class="proactive-bubble" id="proactiveBubble" style="display: none;">
                 <span class="proactive-close" id="closeProactive">✕</span>
                 <div id="proactiveContent">
                     👋 ¡Hola! Soy <strong>Bernardo</strong>. ¿Necesitás ayuda con algún módulo o proceso de <strong>SGI</strong>?
@@ -316,13 +334,19 @@
     function addBubble(role, text) {
         const div = document.createElement("div");
         div.className = `msg ${role}`;
-        div.textContent = text;
+        
+        if (role === "assistant" && window.marked) {
+            div.innerHTML = window.marked.parse(text);
+        } else {
+            div.textContent = text;
+        }
+
         messagesBox.appendChild(div);
         messagesBox.scrollTop = messagesBox.scrollHeight;
         return div;
     }
 
-	async function checkGlobalAlerts() {
+    async function checkGlobalAlerts() {
         try {
             const res = await fetch(`${BASE_URL}/api/bernardo/alerts/active`);
             if (!res.ok) return;
@@ -332,13 +356,11 @@
                 const { id, title, message, severity } = data.alert;
                 currentAlertId = id;
 
-                // Mostrar banner interno en la ventana de chat
                 chatAlertBanner.className = `chat-alert-banner severity-${severity}`;
                 chatAlertBanner.innerHTML = `<strong>⚠️ ${title}:</strong> ${message}`;
                 chatAlertBanner.style.display = "block";
                 alertDot.style.display = "block";
 
-                // Mostrar burbuja proactiva si el usuario no la descartó aún
                 const dismissedId = sessionStorage.getItem(DISMISSED_ALERT_KEY);
                 if (dismissedId !== id && !chatWindow.classList.contains("open")) {
                     proactiveBubble.className = `proactive-bubble severity-${severity}`;
@@ -350,10 +372,10 @@
                 currentAlertId = null;
                 chatAlertBanner.style.display = "none";
                 alertDot.style.display = "none";
-                proactiveBubble.style.display = "none"; // <--- ¡Esta es la línea que faltaba agregar!
+                proactiveBubble.style.display = "none"; // Se oculta correctamente al hacer DELETE
             }
         } catch (e) {
-            // Silencioso si el servidor no responde temporalmente
+            // Silencioso si falla temporalmente
         }
     }
 
@@ -443,7 +465,12 @@
                         const evt = JSON.parse(jsonStr);
                         if (evt.type === "chunk") {
                             fullReply += evt.content;
-                            botBubble.textContent = fullReply;
+                            // Renderizar Markdown progresivamente en streaming
+                            if (window.marked) {
+                                botBubble.innerHTML = window.marked.parse(fullReply);
+                            } else {
+                                botBubble.textContent = fullReply;
+                            }
                             messagesBox.scrollTop = messagesBox.scrollHeight;
                         } else if (evt.type === "error") {
                             botBubble.textContent = evt.content;
@@ -465,7 +492,6 @@
         if (e.key === "Enter") sendMessage();
     });
 
-    // Verificar alertas al iniciar y cada 45 segundos
     checkGlobalAlerts();
     setInterval(checkGlobalAlerts, 45000);
 })();
