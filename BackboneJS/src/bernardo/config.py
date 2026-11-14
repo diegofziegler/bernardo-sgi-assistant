@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     SESSION_TTL_SECONDS: int = 86400
     ALLOWED_ORIGINS: list[str] = ["*"]
     DEFAULT_LANGUAGE: str = "es"
+    ADMIN_API_KEY: str = "cambia_este_token_secreto_sgi"
 
 
 settings = Settings()

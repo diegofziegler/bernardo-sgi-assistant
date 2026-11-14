@@ -4,8 +4,8 @@
 
     const BASE_URL = "__BERNARDO_BASE_URL__";
     const STORAGE_KEY = "bernardo_sgi_thread_id";
+    const DISMISSED_ALERT_KEY = "bernardo_dismissed_alert_id";
 
-    // Obtener o crear thread_id persistente (permite override desde BackboneJS via window.SGI_USER_ID)
     function getThreadId() {
         if (window.SGI_USER_ID) {
             return `sgi_user_${window.SGI_USER_ID}`;
@@ -20,13 +20,11 @@
 
     const threadId = getThreadId();
 
-    // Host con Shadow DOM para aislamiento total de CSS frente a BackboneJS
     const host = document.createElement("div");
     host.id = "bernardo-sgi-host";
     document.body.appendChild(host);
     const shadow = host.attachShadow({ mode: "open" });
 
-    // SVG de la cara de robot de Bernardo
     const robotSvg = `
         <svg viewBox="0 0 64 64" width="34" height="34" fill="none" xmlns="http://www.w3.org/2000/svg">
             <line x1="32" y1="6" x2="32" y2="14" stroke="#93C5FD" stroke-width="3" stroke-linecap="round"/>
@@ -60,26 +58,49 @@
             .proactive-bubble {
                 background: #ffffff;
                 color: #1e293b;
-                padding: 10px 14px;
+                padding: 12px 24px 12px 14px;
                 border-radius: 12px;
-                box-shadow: 0 6px 20px rgba(0,0,0,0.15);
+                box-shadow: 0 6px 20px rgba(0,0,0,0.18);
                 border: 1px solid #e2e8f0;
+                border-left: 4px solid #3b82f6;
                 font-size: 13px;
+                line-height: 1.4;
                 margin-bottom: 10px;
-                max-width: 240px;
+                max-width: 275px;
                 cursor: pointer;
-                animation: fadeIn 0.4s ease;
+                animation: fadeIn 0.35s ease;
                 position: relative;
+            }
+            .proactive-bubble.severity-maintenance {
+                background: #fffbeb;
+                border-color: #fde68a;
+                border-left: 4px solid #f59e0b;
+                color: #78350f;
+            }
+            .proactive-bubble.severity-critical {
+                background: #fef2f2;
+                border-color: #fecaca;
+                border-left: 4px solid #ef4444;
+                color: #7f1d1d;
+            }
+            .proactive-title {
+                font-weight: 700;
+                display: block;
+                margin-bottom: 3px;
             }
             .proactive-close {
                 position: absolute;
-                top: 4px;
-                right: 7px;
-                font-size: 11px;
-                color: #94a3b8;
+                top: 6px;
+                right: 8px;
+                font-size: 12px;
+                opacity: 0.65;
                 cursor: pointer;
             }
+            .proactive-close:hover {
+                opacity: 1;
+            }
             .launcher {
+                position: relative;
                 width: 60px;
                 height: 60px;
                 border-radius: 50%;
@@ -95,9 +116,21 @@
             .launcher:hover {
                 transform: scale(1.07);
             }
+            .alert-dot {
+                position: absolute;
+                top: -2px;
+                right: -2px;
+                width: 16px;
+                height: 16px;
+                border-radius: 50%;
+                background: #ef4444;
+                border: 2px solid #ffffff;
+                display: none;
+                animation: pulse 1.5s infinite;
+            }
             .chat-window {
                 width: 380px;
-                height: 520px;
+                height: 530px;
                 background: #ffffff;
                 border-radius: 14px;
                 box-shadow: 0 12px 32px rgba(0, 0, 0, 0.22);
@@ -137,6 +170,25 @@
                 color: #cbd5e1;
                 font-size: 18px;
                 cursor: pointer;
+            }
+            .chat-alert-banner {
+                display: none;
+                padding: 10px 14px;
+                font-size: 12.5px;
+                line-height: 1.35;
+                border-bottom: 1px solid #e2e8f0;
+            }
+            .chat-alert-banner.severity-info {
+                background: #eff6ff;
+                color: #1e40af;
+            }
+            .chat-alert-banner.severity-maintenance {
+                background: #fffbeb;
+                color: #92400e;
+            }
+            .chat-alert-banner.severity-critical {
+                background: #fef2f2;
+                color: #991b1b;
             }
             .messages {
                 flex: 1;
@@ -205,6 +257,11 @@
                 from { opacity: 0; transform: translateY(6px); }
                 to { opacity: 1; transform: translateY(0); }
             }
+            @keyframes pulse {
+                0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+                70% { transform: scale(1.05); box-shadow: 0 0 0 8px rgba(239, 68, 68, 0); }
+                100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+            }
         </style>
 
         <div class="wrapper">
@@ -219,6 +276,7 @@
                     </div>
                     <button class="close-btn" id="closeBtn" title="Cerrar">✕</button>
                 </div>
+                <div class="chat-alert-banner" id="chatAlertBanner"></div>
                 <div class="messages" id="messagesBox"></div>
                 <div class="input-bar">
                     <input type="text" id="chatInput" placeholder="Preguntame sobre SGI..." />
@@ -228,10 +286,13 @@
 
             <div class="proactive-bubble" id="proactiveBubble">
                 <span class="proactive-close" id="closeProactive">✕</span>
-                👋 ¡Hola! Soy <strong>Bernardo</strong>. ¿Necesitás ayuda con algún módulo o proceso de <strong>SGI</strong>?
+                <div id="proactiveContent">
+                    👋 ¡Hola! Soy <strong>Bernardo</strong>. ¿Necesitás ayuda con algún módulo o proceso de <strong>SGI</strong>?
+                </div>
             </div>
 
             <button class="launcher" id="launcherBtn" title="Hablar con Bernardo">
+                <span class="alert-dot" id="alertDot"></span>
                 ${robotSvg}
             </button>
         </div>
@@ -241,12 +302,16 @@
     const launcherBtn = shadow.getElementById("launcherBtn");
     const closeBtn = shadow.getElementById("closeBtn");
     const proactiveBubble = shadow.getElementById("proactiveBubble");
+    const proactiveContent = shadow.getElementById("proactiveContent");
     const closeProactive = shadow.getElementById("closeProactive");
+    const chatAlertBanner = shadow.getElementById("chatAlertBanner");
+    const alertDot = shadow.getElementById("alertDot");
     const messagesBox = shadow.getElementById("messagesBox");
     const chatInput = shadow.getElementById("chatInput");
     const sendBtn = shadow.getElementById("sendBtn");
 
     let historyLoaded = false;
+    let currentAlertId = null;
 
     function addBubble(role, text) {
         const div = document.createElement("div");
@@ -255,6 +320,41 @@
         messagesBox.appendChild(div);
         messagesBox.scrollTop = messagesBox.scrollHeight;
         return div;
+    }
+
+	async function checkGlobalAlerts() {
+        try {
+            const res = await fetch(`${BASE_URL}/api/bernardo/alerts/active`);
+            if (!res.ok) return;
+            const data = await res.json();
+
+            if (data.has_alert && data.alert) {
+                const { id, title, message, severity } = data.alert;
+                currentAlertId = id;
+
+                // Mostrar banner interno en la ventana de chat
+                chatAlertBanner.className = `chat-alert-banner severity-${severity}`;
+                chatAlertBanner.innerHTML = `<strong>⚠️ ${title}:</strong> ${message}`;
+                chatAlertBanner.style.display = "block";
+                alertDot.style.display = "block";
+
+                // Mostrar burbuja proactiva si el usuario no la descartó aún
+                const dismissedId = sessionStorage.getItem(DISMISSED_ALERT_KEY);
+                if (dismissedId !== id && !chatWindow.classList.contains("open")) {
+                    proactiveBubble.className = `proactive-bubble severity-${severity}`;
+                    const icon = severity === "critical" ? "🚨" : severity === "maintenance" ? "🛠️" : "ℹ️";
+                    proactiveContent.innerHTML = `<span class="proactive-title">${icon} ${title}</span>${message}`;
+                    proactiveBubble.style.display = "block";
+                }
+            } else {
+                currentAlertId = null;
+                chatAlertBanner.style.display = "none";
+                alertDot.style.display = "none";
+                proactiveBubble.style.display = "none"; // <--- ¡Esta es la línea que faltaba agregar!
+            }
+        } catch (e) {
+            // Silencioso si el servidor no responde temporalmente
+        }
     }
 
     async function loadHistory() {
@@ -295,6 +395,9 @@
     closeProactive.addEventListener("click", (e) => {
         e.stopPropagation();
         proactiveBubble.style.display = "none";
+        if (currentAlertId) {
+            sessionStorage.setItem(DISMISSED_ALERT_KEY, currentAlertId);
+        }
     });
 
     async function sendMessage() {
@@ -361,4 +464,8 @@
     chatInput.addEventListener("keypress", (e) => {
         if (e.key === "Enter") sendMessage();
     });
+
+    // Verificar alertas al iniciar y cada 45 segundos
+    checkGlobalAlerts();
+    setInterval(checkGlobalAlerts, 45000);
 })();
